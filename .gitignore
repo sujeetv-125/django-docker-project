@@ -1,0 +1,30 @@
+cd ~/Documents/django-docker-project
+cat > .gitignore << 'EOF'
+# Environment files — never commit these
+.env.dev
+.env.prod
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+*.egg-info/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+EOF
