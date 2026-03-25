@@ -6,3 +6,9 @@ packaging==26.0
 psycopg2-binary==2.9.11
 redis==7.3.0
 sqlparse==0.5.5
+bandit==1.9.4
+coverage==7.13.5
+flake8==7.3.0
+pytest==9.0.2
+pytest-cov==7.1.0
+pytest-django==4.12.0

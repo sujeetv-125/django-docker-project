@@ -1,0 +1,140 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/django-docker-project
+
+jobs:
+
+  test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r app/requirements.txt
+
+      - name: Run flake8
+        run: |
+          pip install flake8
+          flake8 app/project/ \
+            --max-line-length=120 \
+            --exclude=app/project/venv,app/project/migrations
+
+      - name: Run pytest
+        run: |
+          pip install pytest pytest-django pytest-cov
+          cd app/project
+          pytest --cov=. --cov-report=term-missing
+
+  sast:
+    name: Bandit Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit scan
+        run: |
+          bandit -r app/project/ \
+            -x app/project/venv,app/project/migrations \
+            --severity-level medium \
+            --confidence-level medium \
+            -f json -o bandit-report.json
+        continue-on-error: true
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
+
+      - name: Fail on high severity findings
+        run: |
+          HIGH=$(python3 -c "
+          import json
+          with open('bandit-report.json') as f:
+              data = json.load(f)
+          highs = [r for r in data['results'] if r['issue_severity'] == 'HIGH']
+          print(len(highs))
+          ")
+          echo "High severity issues: $HIGH"
+          if [ "$HIGH" -gt "0" ]; then
+            echo "FAILED: $HIGH high severity issues found"
+            exit 1
+          fi
+
+  build:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: sast
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  trivy:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Run Trivy scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:latest
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: trivy
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/django-docker-project
+            git pull origin main
+            docker compose pull web
+            docker compose up -d --no-deps web
+            docker image prune -f
+            echo "Deployed at $(date)"
